@@ -1,0 +1,13 @@
+check
+Using device: cuda
+BF16 enabled: True
+Loading dataset...
+Train samples: 1782
+Eval samples: 381
+Test samples: 383
+Using device: cuda
+At step 0: Local loss is 27.013568341732025 and Local psnr is 2778.212108166212
+At step 1: Local loss is 19.426329508423805 and Local psnr is 3174.988773725413
+At step 2: Local loss is 15.172486685216427 and Local psnr is 3452.874124697167
+Avg loss: 0.03824480728452654
+Avg psnr: 5.838656118304656
