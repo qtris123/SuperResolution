@@ -110,7 +110,19 @@ class CustomPixelShuffle(nn.Module):
 # =============================================================================
 # SUPER RESOLUTION CNN
 # =============================================================================
-   
+
+class Residual_Block(nn.Module):
+    def __init__(self, num_feats = 64, res_scale = 0.1):
+        self.conv1 = nn.Conv2d(num_feats, num_feats, kernel_size = 3, padding = 1)
+        self.conv2 = nn.Conv2d(num_feats, num_feats, kernel_size = 3, padding = 1)
+        self.relu = nn.ReLU(inplace = True)
+        self.res_scale = res_scale
+        
+    def forward(self, x):
+        residual = self.relu(self.conv1(x))
+        residual = self.conv2(residual)*self.res_scale
+        return residual + x          
+        
 class SuperResCNN(nn.Module):
     """
     A Convolutional Neural Network for 2x image super-resolution.
@@ -123,22 +135,23 @@ class SuperResCNN(nn.Module):
     Input:  3-channel RGB image of size 225x300
     Output: 3-channel RGB image of size 450x600 (2x larger)
     """
-    def __init__(self):
+    def __init__(self, num_feats, num_blocks):
         super(SuperResCNN, self).__init__()
         # Feature extraction layers - learn to recognize patterns like edges and textures
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=9, padding=4, device="cuda")   # First conv layer
-        self.conv2 = nn.Conv2d(64, 64, kernel_size=5, padding=2, device="cuda")   # Second conv layer
-        self.conv3 = nn.Conv2d(64, 32, kernel_size=5, padding=2, device="cuda")   # Third conv layer
+        self.head = nn.Conv2d(3, num_feats, kernel_size = 3, padding = 1)
+        body_blocks = [Residual_Block(num_feats, 0.1) for _ in range(num_blocks)] 
+        self.body = nn.Sequential(*body_blocks)
+        self.body_conv = nn.Conv2d(num_feats, num_feats, kernel_size = 3, padding = 1)
         
         # Upsampling branch - increases image resolution by 2x
-        self.upsample_conv = nn.Conv2d(32, 12, kernel_size=3, padding=1, device="cuda")
+        self.upsample_conv = nn.Conv2d(num_feats, 12, kernel_size=3, padding=1)
         # We could use PyTorch's implementation of PixelShuffle
         # self.pixel_shuffle = nn.PixelShuffle(upscale_factor=2)      # Rearranges channels to spatial dimensions
         # But we will be using our own implementation of PixelShuffle
         self.pixel_shuffle = CustomPixelShuffle(upscale_factor=2)
         
         # Final refinement layer - smooths out artifacts
-        self.refine = nn.Conv2d(3, 3, kernel_size=3, padding=1, device="cuda")
+        self.refine = nn.Conv2d(3, 3, kernel_size=3, padding=1)
 
     def forward(self, x):
         """
@@ -149,18 +162,21 @@ class SuperResCNN(nn.Module):
             Output tensor of shape (batch_size, 3, 450, 600)
         """
         identity = F.interpolate(x, scale_factor = 2, mode="bilinear", align_corners=False)
-        # Feature extraction with ReLU activation
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.relu(self.conv3(x))
+        # Inial Conv
+        feat = self.head(x)
+        
+        # Body with long skip
+        res = self.body(feat)
+        res = self.body_conv(res)
+        res = res + feat
         
         # Upsampling to increase resolution
-        x = self.upsample_conv(x)
-        x = self.pixel_shuffle(x)
+        out = self.upsample_conv(res)
+        out = self.pixel_shuffle(out)
         
         # Final refinement
-        x = self.refine(x)
-        return x + identity
+        out = self.refine(x)
+        return out + identity
 
 
     
@@ -286,8 +302,9 @@ def main():
     # Create data loaders for efficient batch processing
     lr = 0.0005
     epoch = 3
-    batch_size = 10  # Number of images to process in each batch (adjust based on GPU memory)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    batch_size = 32  # Number of images to process in each batch (adjust based on GPU memory)
+    num_feats, num_blocks = 64, 8
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
@@ -298,7 +315,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    model = SuperResCNN()
+    model = SuperResCNN(num_feats = num_feats, num_blocks = num_blocks).to(device)
     ## Negative log-likelihood loss
     ## This is a binary classification problem
     criterion = nn.L1Loss()
@@ -321,13 +338,15 @@ def main():
             "epochs": epoch,
             "batch_size": batch_size,
             "eval_step": eval_step,
-            "scheduler": "constant with warm up 100 steps"
+            "scheduler": "constant with warm up 100 steps",
+            "num_feats" : num_feats,
+            "num_blocks": num_blocks
         },
     )
     #Train
     model, best_epoch, avg_loss, avg_psnr, plot_loss, plot_psnr, plot_eval_loss, plot_eval_pnsrn = train_k_epoch(save_dir, eval_step, epoch, model, train_loader, eval_loader, criterion, optimizer, scheduler, scaler)
-    myutilities.plot_loss_psnr("Train", plot_loss, "L1_Loss", plot_psnr, "PSNR")
-    myutilities.plot_loss_psnr("Eval", plot_eval_loss, "Eval L1 loss", plot_eval_pnsrn, "Eval PSNR")
+    myutilities.plot_loss_metrics("Train", plot_loss, "L1_Loss", plot_psnr, "PSNR")
+    myutilities.plot_loss_metrics("Eval", plot_eval_loss, "Eval L1 loss", plot_eval_pnsrn, "Eval PSNR")
     print(f"Avg loss: {avg_loss}")
     print(f"Avg psnr: {avg_psnr}")
 
