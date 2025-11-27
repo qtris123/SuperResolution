@@ -28,7 +28,7 @@ import os  # Operating system interface for file operations
 import myutilities
 from pathlib import Path
 from torch.amp import autocast
-from torch.amp import GradScaler
+from torch.cuda.amp import GradScaler
 import torch.optim as optim
 import math
 import matplotlib.pyplot as plt
@@ -36,7 +36,7 @@ from torch.optim.lr_scheduler import LambdaLR
 import torch.nn.functional as F
 import wandb 
 
-from myutilities import lambda_lr, save_checkpoint
+from myutilities import save_checkpoint, build_cosine_with_warmup
 
 
 
@@ -113,6 +113,7 @@ class CustomPixelShuffle(nn.Module):
 
 class Residual_Block(nn.Module):
     def __init__(self, num_feats = 64, res_scale = 0.1):
+        super().__init__()
         self.conv1 = nn.Conv2d(num_feats, num_feats, kernel_size = 3, padding = 1)
         self.conv2 = nn.Conv2d(num_feats, num_feats, kernel_size = 3, padding = 1)
         self.relu = nn.ReLU(inplace = True)
@@ -175,7 +176,7 @@ class SuperResCNN(nn.Module):
         out = self.pixel_shuffle(out)
         
         # Final refinement
-        out = self.refine(x)
+        out = self.refine(out)
         return out + identity
 
 
@@ -199,7 +200,7 @@ def train_k_epoch(save_dir, eval_step, epoch, model, train_loader, eval_loader, 
     total_psnr = 0.0
     steps = 0
     best_psnr = 0
-    best_epoch = "Null"
+    best_epoch = "Run2"
 
     plot_loss = []
     plot_psnr = []
@@ -239,7 +240,7 @@ def train_k_epoch(save_dir, eval_step, epoch, model, train_loader, eval_loader, 
             wandb.log({"train/loss": loss.item(),
                        "train/psnr": psnr},)
             steps += 1
-            print(f"At step {k}: Local loss is {local_loss} and Local psnr is {local_psnr}")
+            print(f"At step {k}: Local loss is {loss.item()} and Local psnr is {psnr}")
             
             if steps % eval_step == 0:
                 eval_loss, eval_psnr = validate(model, eval_loader, criterion)
@@ -280,8 +281,9 @@ def main():
     print("Loading dataset...")
     dataset = myutilities.ImageSuperResDataset('kaggle/train_x', 'kaggle/train_y')
     save_dir = "checkpoints/"
+    run_name = "EDSR_2_colab"
     os.makedirs(save_dir, exist_ok=True)
-    eval_step = 50
+    eval_step = 8
 
     # Split dataset into training, validation, and test sets (70%/15%/15%)
     total_size = len(dataset)
@@ -304,6 +306,7 @@ def main():
     epoch = 3
     batch_size = 32  # Number of images to process in each batch (adjust based on GPU memory)
     num_feats, num_blocks = 64, 8
+    warmup_steps, min_lr_scale = 15, 1e-7
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
@@ -322,7 +325,8 @@ def main():
     ## Stochastic Gradient Descent
     #### Just like gradient descent, but uses just part of the data not the entire dataset
     optimizer = optim.AdamW(model.parameters(), lr = lr, betas = (0.9, 0.999), weight_decay=0.01)
-    scheduler = LambdaLR(optimizer, lambda_lr)
+    total_steps = epoch * len(train_dataset)
+    scheduler = LambdaLR(optimizer, build_cosine_with_warmup(warmup_steps = warmup_steps, total_steps = total_steps, min_lr_scale = min_lr_scale))
     scaler = GradScaler()
     
     #Wandb
@@ -332,13 +336,16 @@ def main():
         # Set the wandb project where this run will be logged.
         project="SuperResolution",
         # Track hyperparameters and run metadata.
+        name=run_name,
         config={
             "learning_rate": lr,
-            "architecture": "3 convolutions",
+            "architecture": "EDSR_2",
             "epochs": epoch,
             "batch_size": batch_size,
             "eval_step": eval_step,
-            "scheduler": "constant with warm up 100 steps",
+            "scheduler": "consine annealing with warmup ratio",
+            "warmup_steps" : warmup_steps,
+            "min_lr_scale" :  min_lr_scale,
             "num_feats" : num_feats,
             "num_blocks": num_blocks
         },
@@ -371,4 +378,3 @@ def load_checkpoint(path="checkpoint.pth", device="cuda"):
 
     print(f"Loaded checkpoint from {path}, resuming at epoch {start_epoch}")
     return model, optimizer, scaler, start_epoch, best_psnr
-    

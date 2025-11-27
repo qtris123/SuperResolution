@@ -7,7 +7,9 @@ from PIL import Image  # Python Imaging Library for image handling
 import os  # Operating system interface for file operations
 import matplotlib.pyplot as plt  # Plotting library for visualizing results
 import numpy as np
-from torch.amp import GradScaler
+from torch.cuda.amp import GradScaler
+import math
+import wandb
 
 # =============================================================================
 # Custom Dataset Class for Image Super-Resolution
@@ -245,12 +247,27 @@ def plot_loss_metrics(name, plot_loss, loss_name, plot_metric, metric_name):
     plt.close()
     
     
-def lambda_lr(cur_step):
-    # constant with warm up 100 steps
-    warmup_steps = 100
-    if cur_step < 100:
-        return float(cur_step / float(warmup_steps))
-    return 1.0
+# def lambda_lr(cur_step):
+#     # # constant with warm up 100 steps
+#     # warmup_steps = 100
+#     # if cur_step < 100:
+#     #     return float(cur_step / float(warmup_steps))
+#     # return 1.0
+#     ... 
+
+# cosine annealing with warm up steps
+def build_cosine_with_warmup(warmup_steps, total_steps, min_lr_scale=0.0):
+    def lr_lambda(cur_step):
+        local_lr = 0
+        if cur_step < warmup_steps:
+            local_lr = cur_step / warmup_steps
+            wandb.log({"train/lr": local_lr})
+            return local_lr
+        progress = (cur_step - warmup_steps) / float(total_steps - warmup_steps)
+        local_lr = min_lr_scale + 0.5 * (1 + math.cos(math.pi * progress)) * (1 - min_lr_scale)
+        wandb.log({"train/lr": local_lr})
+        return local_lr
+    return lr_lambda
 
 def save_checkpoint(model, optimizer, scaler, epoch, best_psnr, best_checkpoint, path="checkpoint.pth"):
     path = path + f"epoch_{best_checkpoint}"
